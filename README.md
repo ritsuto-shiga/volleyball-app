@@ -63,7 +63,6 @@
 本アプリをローカル環境（自身のPC）で開発・実行するための手順です。
 
 ### 1. リポジトリのクローン
-```bash
 git clone [https://github.com/ritsuto-shiga/volleyball-app.git](https://github.com/ritsuto-shiga/volleyball-app.git)
 cd volleyball-app
 2. 仮想環境の構築と有効化
