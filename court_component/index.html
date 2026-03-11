@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Volleyball Court Component</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: transparent;
+            /* Seamless integration */
+        }
+
+        .court-shell {
+            width: 100%;
+            /* Height is controlled by aspect ratio or fixed somewhat, but let's make it responsive */
+            /* The Python side set it to 600px. We can fit to width. */
+            aspect-ratio: 100 / 60;
+            /* Based on 100x60 grid or similar */
+            position: relative;
+            border-radius: 16px;
+            overflow: hidden;
+            border: 1px solid rgba(15, 23, 42, 0.18);
+            box-shadow: 0 10px 30px rgba(15, 23, 42, 0.10);
+            background: #ffffff;
+            box-sizing: border-box;
+        }
+
+        /* SVG styling */
+        svg {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+            pointer-events: none;
+        }
+
+        /* Transparent overlay area (anchor/button) */
+        .court-btn {
+            position: absolute;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-sizing: border-box;
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            border-radius: 12px;
+
+            background: rgba(56, 189, 248, 0.06);
+            /* almost transparent */
+            color: rgba(15, 23, 42, 0.78);
+            font-weight: 800;
+            font-size: 14px;
+            cursor: pointer;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            text-decoration: none;
+
+            transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
+            z-index: 2;
+        }
+
+        .court-btn:hover {
+            background: rgba(56, 189, 248, 0.18);
+            border-color: rgba(255, 255, 255, 0.55);
+        }
+
+        .court-btn:active {
+            transform: scale(0.99);
+        }
+
+        .court-btn.selected {
+            background: rgba(2, 132, 199, 0.28);
+            border-color: rgba(255, 255, 255, 0.80);
+            box-shadow: 0 0 0 3px rgba(2, 132, 199, 0.16) inset;
+        }
+
+        .court-btn.disabled {
+            pointer-events: none;
+            opacity: 0.16;
+            cursor: not-allowed;
+        }
+
+        /* label bubble */
+        .court-btn span {
+            padding: 4px 10px;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.22);
+            backdrop-filter: blur(1px);
+        }
+
+        /* Message when disabled or strictly output mode */
+        .disabled-overlay {
+            position: absolute;
+            inset: 0;
+            background: rgba(255, 255, 255, 0.5);
+            z-index: 10;
+            display: none;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="court-shell" id="court-container">
+        <svg viewBox="0 0 100 100" preserveAspectRatio="none">
+            <rect x="0" y="0" width="100" height="100" fill="#f59e0b" />
+            <rect x="1" y="1" width="98" height="98" fill="none" stroke="#ffffff" stroke-width="1.2" />
+            <line x1="0" y1="50" x2="100" y2="50" stroke="#ffffff" stroke-width="1.4" />
+            <line x1="0" y1="33.333" x2="100" y2="33.333" stroke="#ffffff" stroke-width="0.9" opacity="0.95" />
+            <line x1="0" y1="66.666" x2="100" y2="66.666" stroke="#ffffff" stroke-width="0.9" opacity="0.95" />
+        </svg>
+        <!-- Buttons will be injected here via JS -->
+    </div>
+
+    <script>
+        // Streamlit Component Helper
+        function sendMessage(type, data) {
+            // Streamlit sends messages to the parent window
+            // But for setComponentValue, we use the specific API
+            // This helper is for debug mostly
+        }
+
+        const vscodeApi = undefined; // For testing outside Streamlit if needed
+
+        // Initialize Streamlit API
+        function sendValue(value) {
+            Streamlit.setComponentValue(value);
+        }
+
+        const AREAS_GRID = [
+            ["1", "2", "3"],
+            ["4", "5", "6"],
+            ["7", "8", "9"],
+            ["L1", "C1", "R1"],
+            ["L2", "C2", "R2"],
+            ["L3", "C3", "R3"],
+        ];
+
+        const container = document.getElementById("court-container");
+
+        // Generate buttons
+        const cellW = 100 / 3;
+        const cellH = 100 / 6;
+
+        for (let r = 0; r < 6; r++) {
+            for (let c = 0; c < 3; c++) {
+                const label = AREAS_GRID[r][c];
+                const left = c * cellW;
+                const top = r * cellH;
+
+                const btn = document.createElement("div");
+                btn.className = "court-btn";
+                btn.id = "btn-" + label;
+                btn.style.left = left + "%";
+                btn.style.top = top + "%";
+                btn.style.width = cellW + "%";
+                btn.style.height = cellH + "%";
+
+                const span = document.createElement("span");
+                span.textContent = label;
+                btn.appendChild(span);
+
+                btn.onclick = () => {
+                    if (btn.classList.contains("disabled")) return;
+                    sendValue(label);
+                };
+
+                container.appendChild(btn);
+            }
+        }
+
+        // --- Dynamic Height Adjustment ---
+        function updateHeight() {
+            // Calculate height based on width (aspect ratio 100:60 = 0.6)
+            const width = document.body.clientWidth;
+            const height = width * 0.6;
+            document.body.style.height = height + 'px';
+            container.style.height = height + 'px';
+            Streamlit.setFrameHeight(height);
+        }
+
+        // --- Streamlit Lifecycle ---
+
+        function onRender(event) {
+            if (!window.rendered) {
+                window.rendered = true;
+                // Update height once on first render
+                updateHeight();
+                // Watch for resize
+                window.addEventListener('resize', updateHeight);
+            }
+
+            const { args } = event.detail;
+
+            // args should contain:
+            // selected: list of strings (e.g. ["1"])
+            // disabled: list of strings (e.g. ["L1", "C1", ...])
+            // or allowed: list of strings
+
+            const selected = new Set(args.selected || []);
+            const disabled = new Set(args.disabled || []);
+
+            // Update all buttons
+            const buttons = document.querySelectorAll(".court-btn");
+            buttons.forEach(btn => {
+                const label = btn.id.replace("btn-", "");
+
+                // Selected state
+                if (selected.has(label)) {
+                    btn.classList.add("selected");
+                } else {
+                    btn.classList.remove("selected");
+                }
+
+                // Disabled state
+                if (disabled.has(label)) {
+                    btn.classList.add("disabled");
+                } else {
+                    btn.classList.remove("disabled");
+                }
+            });
+
+            // Re-calc height just in case
+            updateHeight();
+        }
+
+        // Hook into Streamlit
+        const Streamlit = {
+            setComponentValue: function (value) {
+                // Send value to Python
+                window.parent.postMessage({
+                    isStreamlitMessage: true,
+                    type: "streamlit:setComponentValue",
+                    value: value
+                }, "*");
+            },
+            setFrameHeight: function (height) {
+                window.parent.postMessage({
+                    isStreamlitMessage: true,
+                    type: "streamlit:setFrameHeight",
+                    height: height
+                }, "*");
+            },
+            RENDER_EVENT: "streamlit:render"
+        };
+
+        // Note: The real Streamlit JS library handles the postMessage details.
+        // We should ideally include the official script or implement the handshake.
+        // For simplicity, we can try to use a minimal implementation or just expect the messages.
+        // Actually, Streamlit components usually import standard script. 
+        // Let's add the standard script loop here to be safe and robust.
+
+        // Standard Streamlit Component Script (minified version for embedding)
+        window.addEventListener("message", function (event) {
+            if (event.data.type === Streamlit.RENDER_EVENT) {
+                onRender(new CustomEvent(Streamlit.RENDER_EVENT, { detail: event.data }));
+            }
+        });
+
+        // Initial ready message
+        window.parent.postMessage({
+            isStreamlitMessage: true,
+            type: "streamlit:componentReady",
+            apiVersion: 1
+        }, "*");
+    </script>
+</body>
+
+</html>

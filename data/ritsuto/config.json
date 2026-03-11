@@ -1,0 +1,136 @@
+{
+    "players_master": [
+        {
+            "name": "白川想",
+            "nickname": "そう",
+            "number": 1,
+            "position": "L",
+            "default_serve": "フローター"
+        },
+        {
+            "name": "井上立舜",
+            "nickname": "りつと",
+            "number": 2,
+            "position": "OH",
+            "default_serve": "フローター"
+        },
+        {
+            "name": "関口奏斗",
+            "nickname": "かなと",
+            "number": 3,
+            "position": "OH",
+            "default_serve": "フローター"
+        },
+        {
+            "name": "山田健心",
+            "nickname": "けんしん",
+            "number": 4,
+            "position": "S",
+            "default_serve": "フローター"
+        },
+        {
+            "name": "脇田尚季",
+            "nickname": "わきた",
+            "number": 5,
+            "position": "OP",
+            "default_serve": "フローター"
+        },
+        {
+            "name": "大東友紀也",
+            "nickname": "ゆきや",
+            "number": 6,
+            "position": "MB",
+            "default_serve": "フローター"
+        },
+        {
+            "name": "森貞直人",
+            "nickname": "もりさだ",
+            "number": 7,
+            "position": "OH",
+            "default_serve": "フローター"
+        },
+        {
+            "name": "勝連翔琉",
+            "nickname": "かつれん",
+            "number": 8,
+            "position": "MB",
+            "default_serve": "フローター"
+        },
+        {
+            "name": "嶽下稜馬",
+            "nickname": "たけした",
+            "number": 9,
+            "position": "L",
+            "default_serve": "フローター"
+        },
+        {
+            "name": "北田昇太郎",
+            "nickname": "しょうたろう",
+            "number": 10,
+            "position": "OH",
+            "default_serve": "フローター"
+        },
+        {
+            "name": "大島優",
+            "nickname": "ゆう",
+            "number": 11,
+            "position": "OH",
+            "default_serve": "フローター"
+        },
+        {
+            "name": "前田凌",
+            "nickname": "りょう",
+            "number": 12,
+            "position": "OP",
+            "default_serve": "フローター"
+        },
+        {
+            "name": "宮林衣里",
+            "nickname": "えり",
+            "number": 13,
+            "position": "OH",
+            "default_serve": "フローター"
+        },
+        {
+            "name": "北村栞帆",
+            "nickname": "しほ",
+            "number": 14,
+            "position": "S",
+            "default_serve": "フローター"
+        },
+        {
+            "name": "こころ",
+            "nickname": "こころ",
+            "number": 15,
+            "position": "MB",
+            "default_serve": "フローター"
+        }
+    ],
+    "attack_patterns": [
+        {
+            "name": "オープン"
+        },
+        {
+            "name": "平行"
+        },
+        {
+            "name": "Aクイック"
+        },
+        {
+            "name": "Bクイック"
+        },
+        {
+            "name": "セミ"
+        },
+        {
+            "name": "バックアタック"
+        },
+        {
+            "name": "ダイレクト"
+        }
+    ],
+    "serve_types": [
+        "ジャンプ",
+        "フローター"
+    ]
+}
