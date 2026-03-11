@@ -65,13 +65,13 @@
 ### 1. リポジトリのクローン
 - git clone [https://github.com/ritsuto-shiga/volleyball-app.git](https://github.com/ritsuto-shiga/volleyball-app.git)cd volleyball-app
 ### 2. 仮想環境の構築と有効化
-# 仮想環境の作成
+#### 仮想環境の作成
 - python -m venv .venv
 
-### 仮想環境の有効化 (Windowsの場合)
+#### 仮想環境の有効化 (Windowsの場合)
 - .venv\Scripts\activate
 
-### 仮想環境の有効化 (Mac/Linuxの場合)
+#### 仮想環境の有効化 (Mac/Linuxの場合)
 - source .venv/bin/activate
 ### 3. 依存ライブラリのインストール
 - pip install -r requirements.txt
