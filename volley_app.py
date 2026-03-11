@@ -1,3 +1,5 @@
+# github使い方確認
+
 import os
 import json
 import uuid
