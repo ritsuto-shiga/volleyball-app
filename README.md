@@ -1,4 +1,7 @@
 # 🏐 バレーボール戦術分析システム (Volleyball Analytics V4)
+![Python](https://img.shields.io/badge/Python-3.12-blue?logo=python)
+![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?logo=streamlit&logoColor=white)
+![Google Cloud](https://img.shields.io/badge/Google_Cloud-4285F4?logo=google-cloud&logoColor=white)
 
 滋賀大学データサイエンス学部の自主ゼミで開発している、バレーボールの試合をリアルタイムで記録・分析するためのWebアプリケーションです。
 
