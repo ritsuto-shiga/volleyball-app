@@ -1,5 +1,3 @@
-# volleyball-app
-バレーボール試合管理アプリ
 # 🏐 バレーボール戦術分析システム (Volleyball Analytics V4)
 
 滋賀大学データサイエンス学部の自主ゼミで開発している、バレーボールの試合をリアルタイムで記録・分析するためのWebアプリケーションです。
@@ -41,11 +39,27 @@
 - **Data Analysis**: Pandas, Matplotlib, UUID
 - **Component**: カスタムSVGコートコンポーネント
 
+### 技術詳細
+## 🛠 インフラ・デプロイ詳細 (Infrastructure & Deployment)
+本プロジェクトでは、スケーラビリティと環境の再現性を確保するため、以下の技術スタックを採用しています。
+
+- **実行環境**: [Google App Engine (GAE)](https://cloud.google.com/appengine)
+  - `app.yaml` により管理され、Python 3.9 ランタイム上で Streamlit を稼働させています。
+- **コンテナ技術**: [Docker](https://www.docker.com/)
+  - `python:3.12-slim` をベースイメージとした軽量なコンテナを構築。
+  - `Dockerfile` にて依存ライブラリのインストールから実行コマンドまでを定義し、環境に依存しない動作を実現しています。
+- **データ管理**: [Google Cloud Storage (GCS)](https://cloud.google.com/storage)
+  - バケット名: `volley-app`
+  - ユーザー情報 (`users.json`) や試合データをクラウド上に永続化し、複数端末からのアクセスに対応。
+  - `google-cloud-storage` ライブラリを用いたカスタムヘルパー関数（アップロード/ダウンロード）を実装。
+
 ## 📂 ディレクトリ構成
 - `volley_app.py`: アプリケーションのメインロジック
 - `court_component/`: コート入力用のカスタムUIコンポーネント
 - `data/`: 試合データおよび設定ファイルの保存先（.gitignoreにより保護）
 - `app.yaml`: Google Cloud App Engineデプロイ用設定
+
+
 
 ## 👤 開発者
 - 井上 立舜 (Ritsuto Inoue)
