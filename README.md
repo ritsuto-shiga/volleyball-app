@@ -63,24 +63,20 @@
 本アプリをローカル環境（自身のPC）で開発・実行するための手順です。
 
 ### 1. リポジトリのクローン
-git clone [https://github.com/ritsuto-shiga/volleyball-app.git](https://github.com/ritsuto-shiga/volleyball-app.git)
-cd volleyball-app
-2. 仮想環境の構築と有効化
-Bash
+- git clone [https://github.com/ritsuto-shiga/volleyball-app.git](https://github.com/ritsuto-shiga/volleyball-app.git)cd volleyball-app
+### 2. 仮想環境の構築と有効化
 # 仮想環境の作成
-python -m venv .venv
+- python -m venv .venv
 
-# 仮想環境の有効化 (Windowsの場合)
-.venv\Scripts\activate
+### 仮想環境の有効化 (Windowsの場合)
+- .venv\Scripts\activate
 
-# 仮想環境の有効化 (Mac/Linuxの場合)
-# source .venv/bin/activate
-3. 依存ライブラリのインストール
-Bash
-pip install -r requirements.txt
-4. アプリケーションの起動
-Bash
-streamlit run volley_app.py
+### 仮想環境の有効化 (Mac/Linuxの場合)
+- source .venv/bin/activate
+### 3. 依存ライブラリのインストール
+- pip install -r requirements.txt
+### 4. アプリケーションの起動
+- streamlit run volley_app.py
 
 ## 👤 開発者
 - 井上 立舜 (Ritsuto Inoue)
