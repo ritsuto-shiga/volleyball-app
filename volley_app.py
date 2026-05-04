@@ -495,10 +495,13 @@ def save_current_match_snapshot() -> None:
 
 
 def save_match_meta() -> None:
-    """Save tournament and file name to a separate json file."""
+    """Save match metadata to a separate json file."""
     ensure_data_dir()
+    match_date = st.session_state.get("match_date", "")
     data = {
-        "tournament_name": st.session_state.get("tournament_name", ""),
+        "tournament_name": match_date,
+        "match_date": match_date,
+        "match_opponent": st.session_state.get("match_opponent", ""),
         "file_name": st.session_state.get("file_name", ""),
     }
     content = json.dumps(data, ensure_ascii=False, indent=4)
@@ -514,14 +517,16 @@ def save_match_meta() -> None:
 
 
 def load_match_meta() -> None:
-    """Load tournament and file name from json file."""
+    """Load match metadata from json file."""
     username = st.session_state.get("auth_team", "default")
     path = f"data/{username}/current_match_meta.json"
     content = gcs_download(path)
     if content is not None:
         try:
             data = json.loads(content)
-            st.session_state.tournament_name = data.get("tournament_name", "")
+            st.session_state.match_date = data.get("match_date", data.get("tournament_name", ""))
+            st.session_state.match_opponent = data.get("match_opponent", "")
+            st.session_state.tournament_name = data.get("match_date", data.get("tournament_name", ""))
             st.session_state.file_name = data.get("file_name", "")
             return
         except Exception:
@@ -530,7 +535,9 @@ def load_match_meta() -> None:
     if os.path.exists(path_local):
         with open(path_local, "r", encoding="utf-8") as f:
             data = json.load(f)
-            st.session_state.tournament_name = data.get("tournament_name", "")
+            st.session_state.match_date = data.get("match_date", data.get("tournament_name", ""))
+            st.session_state.match_opponent = data.get("match_opponent", "")
+            st.session_state.tournament_name = data.get("match_date", data.get("tournament_name", ""))
             st.session_state.file_name = data.get("file_name", "")
 
 
@@ -609,69 +616,93 @@ def save_match_to_archive(tournament: str, filename: str) -> str:
     import shutil
     shutil.copy2(src, dest)
     os.remove(src)
-    # Also remove meta
+    # Save match meta alongside the archive
+    meta_data = {
+        "match_date": st.session_state.get("match_date", tournament),
+        "match_opponent": st.session_state.get("match_opponent", ""),
+        "file_name": filename,
+    }
+    meta_dest = os.path.join(dest_dir, f"{filename}_meta.json")
+    with open(meta_dest, "w", encoding="utf-8") as f:
+        json.dump(meta_data, f, ensure_ascii=False, indent=4)
+    # Remove current meta
     meta_path = get_current_match_meta_path()
     if os.path.exists(meta_path):
         os.remove(meta_path)
     return dest
 
 
-def list_saved_matches() -> list[dict]:
-    """Return list of {tournament, filename, path, mtime, size, display_date}."""
-    matches_dir = get_matches_dir()
+@st.cache_data(ttl=60)
+def list_saved_matches(user: str) -> list[dict]:
+    """Return list of {tournament, filename, path, mtime, size, display_date}.
+    Cached per user for 60 seconds; call list_saved_matches.clear() after saving."""
+    matches_dir = os.path.join(DATA_ROOT, user, "matches")
     result = []
     if not os.path.exists(matches_dir):
         return result
-    
-    # helper
-    def get_file_info(path):
-        stat = os.stat(path)
+
+    def get_file_info(fpath):
+        stat = os.stat(fpath)
         dt = datetime.fromtimestamp(stat.st_mtime)
         return dt, stat.st_size
 
-    # 1. Check for files directly under matches_dir
+    def read_meta(dir_path: str, base_name: str) -> dict:
+        meta_path = os.path.join(dir_path, f"{base_name}_meta.json")
+        if os.path.exists(meta_path):
+            try:
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return {}
+
+    # 1. Files directly under matches_dir
     for fname in sorted(os.listdir(matches_dir)):
         if fname.endswith(".jsonl"):
-            path = os.path.join(matches_dir, fname)
-            dt, size = get_file_info(path)
-            display_name = fname.replace(".jsonl", "")
-            if not display_name:
-                display_name = "Unknown_Match"
-            
+            fpath = os.path.join(matches_dir, fname)
+            dt, size = get_file_info(fpath)
+            display_name = fname.replace(".jsonl", "") or "Unknown_Match"
+            meta = read_meta(matches_dir, display_name)
             result.append({
                 "tournament": "未分類",
                 "filename": display_name,
-                "path": path,
+                "match_opponent": meta.get("match_opponent", ""),
+                "match_date": meta.get("match_date", ""),
+                "path": fpath,
                 "mtime": dt,
                 "size": size,
-                "display_date": dt.strftime("%Y-%m-%d %H:%M")
+                "display_date": dt.strftime("%Y-%m-%d %H:%M"),
             })
 
-    # 2. Check subdirectories
+    # 2. Subdirectories
     for tournament in sorted(os.listdir(matches_dir)):
         t_dir = os.path.join(matches_dir, tournament)
         if not os.path.isdir(t_dir):
             continue
         for fname in sorted(os.listdir(t_dir)):
             if fname.endswith(".jsonl"):
-                path = os.path.join(t_dir, fname)
-                dt, size = get_file_info(path)
+                fpath = os.path.join(t_dir, fname)
+                dt, size = get_file_info(fpath)
+                base_name = fname.replace(".jsonl", "")
+                meta = read_meta(t_dir, base_name)
                 result.append({
                     "tournament": tournament,
-                    "filename": fname.replace(".jsonl", ""),
-                    "path": path,
+                    "filename": base_name,
+                    "match_opponent": meta.get("match_opponent", ""),
+                    "match_date": meta.get("match_date", tournament),
+                    "path": fpath,
                     "mtime": dt,
                     "size": size,
-                    "display_date": dt.strftime("%Y-%m-%d %H:%M")
+                    "display_date": dt.strftime("%Y-%m-%d %H:%M"),
                 })
-    
-    # Sort by mtime desc
+
     result.sort(key=lambda x: x["mtime"], reverse=True)
     return result
 
 
+@st.cache_data
 def load_events_from_file(path: str) -> list[dict]:
-    """Load events from a JSONL file."""
+    """Load events from a JSONL file. Cached by path."""
     events = []
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
@@ -697,6 +728,10 @@ def init_session_state() -> None:
         st.session_state.is_analysis_active = False
     if "tournament_name" not in st.session_state:
         st.session_state.tournament_name = ""
+    if "match_date" not in st.session_state:
+        st.session_state.match_date = ""
+    if "match_opponent" not in st.session_state:
+        st.session_state.match_opponent = ""
     if "file_name" not in st.session_state:
         st.session_state.file_name = ""
     if "starting_rotation" not in st.session_state:
@@ -793,6 +828,12 @@ def init_session_state() -> None:
     if "dark_mode" not in st.session_state:
         st.session_state.dark_mode = False
 
+    # Post-match summary
+    if "show_match_summary" not in st.session_state:
+        st.session_state.show_match_summary = False
+    if "match_summary" not in st.session_state:
+        st.session_state.match_summary = {}
+
     # component key management
     if "court_key_id" not in st.session_state:
         st.session_state.court_key_id = 0
@@ -851,217 +892,274 @@ def show_viewer_management() -> None:
 
 
 def show_registration_mode() -> None:
-    st.subheader("各種マスター登録 (プロ仕様)")
-
+    st.markdown("## 各種登録")
     is_admin = st.session_state.get("role") == "admin"
+
+    sections = ["🏐  選手マスター", "⚡  攻撃パターン", "🎯  サーブ種類"]
     if is_admin:
-        tab1, tab2, tab3, tab4 = st.tabs(["選手マスター", "攻撃パターン", "サーブ種類", "利用者管理"])
-    else:
-        tab1, tab2, tab3 = st.tabs(["選手マスター", "攻撃パターン", "サーブ種類"])
+        sections.append("👥  利用者管理")
 
-    # --- TAB 1: Player Master ---
-    with tab1:
-        players = st.session_state.players_master
-        position_options = ["S", "OH", "MB", "OP", "L"]
+    if "reg_section" not in st.session_state:
+        st.session_state.reg_section = sections[0]
 
-        # Session state for player UI
-        if "adding_player" not in st.session_state:
-            st.session_state.adding_player = False
-        if "selected_player_idx" not in st.session_state:
-            st.session_state.selected_player_idx = None
+    col_nav, col_content = st.columns([1, 3])
 
-        # Header
-        col_title, col_add = st.columns([3, 1])
-        with col_title:
-            st.markdown(f"**登録選手: {len(players)}名**")
-        with col_add:
-            if st.button("＋ 選手を追加", type="primary", use_container_width=True, key="btn_open_add_player"):
-                st.session_state.adding_player = True
+    with col_nav:
+        for sec in sections:
+            is_active = st.session_state.reg_section == sec
+            if st.button(sec, key=f"reg_nav_{sec}",
+                         type="primary" if is_active else "secondary",
+                         use_container_width=True):
+                st.session_state.reg_section = sec
+                st.session_state.adding_player = False
                 st.session_state.selected_player_idx = None
                 st.rerun()
 
-        # Add player form
-        if st.session_state.adding_player:
-            with st.container(border=True):
-                st.markdown("**新しい選手を追加**")
-                c1, c2, c3 = st.columns([1, 2, 3])
-                with c1:
-                    new_number = st.number_input("背番号", min_value=0, max_value=99, step=1, key="new_player_number")
-                with c2:
-                    new_position = st.selectbox("ポジション", position_options, key="new_player_position")
-                with c3:
-                    new_name = st.text_input("名前", key="new_player_name")
+    with col_content:
+        section = st.session_state.reg_section
 
-                ca, cb = st.columns(2)
-                with ca:
-                    if st.button("追加する", type="primary", use_container_width=True, key="confirm_add_player"):
-                        if not new_name.strip():
-                            st.error("名前を入力してください")
-                        else:
-                            players.append({
-                                "name": new_name.strip(),
-                                "nickname": new_name.strip(),
-                                "number": int(new_number),
-                                "position": new_position,
-                                "height": None,
-                                "max_reach": None,
-                                "serve_types": [],
-                            })
-                            st.session_state.players_master = players
-                            save_config()
-                            st.session_state.adding_player = False
-                            st.success(f"「{new_name.strip()}」を追加しました")
-                            st.rerun()
-                with cb:
-                    if st.button("キャンセル", use_container_width=True, key="cancel_add_player"):
-                        st.session_state.adding_player = False
-                        st.rerun()
+        # ---- 選手マスター ----
+        if "選手マスター" in section:
+            players = st.session_state.players_master
+            position_options = ["S", "OH", "MB", "OP", "L"]
 
-        st.divider()
+            if "adding_player" not in st.session_state:
+                st.session_state.adding_player = False
+            if "selected_player_idx" not in st.session_state:
+                st.session_state.selected_player_idx = None
 
-        # Player list
-        if not players:
-            st.info("選手が登録されていません。「＋ 選手を追加」から登録してください。")
-        else:
-            serve_options = st.session_state.serve_types
-            for i, p in enumerate(players):
-                # Backward compat: migrate default_serve → serve_types
-                if "serve_types" not in p:
-                    ds = p.get("default_serve", "")
-                    p["serve_types"] = [ds] if ds and ds != "なし" else []
-                if "height" not in p:
-                    p["height"] = None
-                if "max_reach" not in p:
-                    p["max_reach"] = None
-
-                is_selected = st.session_state.selected_player_idx == i
-                num = p.get("number", "")
-                name = p.get("name", "")
-                pos = p.get("position", "")
-                icon = "▼ " if is_selected else "▶ "
-
-                if st.button(f"{icon}**{num}. {name}**　　{pos}", key=f"player_row_{i}", use_container_width=True):
-                    st.session_state.selected_player_idx = None if is_selected else i
-                    st.session_state.adding_player = False
+            col_title, col_add = st.columns([3, 1])
+            with col_title:
+                st.markdown(f"**登録選手: {len(players)}名**")
+            with col_add:
+                if st.button("＋ 選手を追加", type="primary", use_container_width=True, key="btn_open_add_player"):
+                    st.session_state.adding_player = True
+                    st.session_state.selected_player_idx = None
                     st.rerun()
 
-                if is_selected:
-                    with st.container(border=True):
-                        st.markdown(f"**{name} の詳細情報**")
-                        d1, d2 = st.columns(2)
-                        with d1:
-                            edit_nickname = st.text_input("ニックネーム（表示名）", value=p.get("nickname", name), key=f"edit_nick_{i}")
-                            edit_height = st.number_input("身長 (cm)", min_value=0, max_value=250,
-                                value=int(p["height"]) if p["height"] else 0, step=1, key=f"edit_height_{i}")
-                        with d2:
-                            edit_number = st.number_input("背番号", min_value=0, max_value=99,
-                                value=int(num), step=1, key=f"edit_number_{i}")
-                            edit_reach = st.number_input("最高到達点 (cm)", min_value=0, max_value=400,
-                                value=int(p["max_reach"]) if p["max_reach"] else 0, step=1, key=f"edit_reach_{i}")
+            if st.session_state.adding_player:
+                with st.container(border=True):
+                    st.markdown("**新しい選手を追加**")
+                    c1, c2, c3 = st.columns([1, 2, 3])
+                    with c1:
+                        new_number = st.number_input("背番号", min_value=0, max_value=99, step=1, key="new_player_number")
+                    with c2:
+                        new_position = st.selectbox("ポジション", position_options, key="new_player_position")
+                    with c3:
+                        new_name = st.text_input("名前", key="new_player_name")
 
-                        edit_position = st.selectbox(
-                            "ポジション", position_options,
-                            index=position_options.index(pos) if pos in position_options else 0,
-                            key=f"edit_pos_{i}"
-                        )
-                        edit_serves = st.multiselect(
-                            "サーブ種類（複数選択可）", options=serve_options,
-                            default=[s for s in p.get("serve_types", []) if s in serve_options],
-                            key=f"edit_serves_{i}"
-                        )
-
-                        sa, sb = st.columns(2)
-                        with sa:
-                            if st.button("保存", type="primary", use_container_width=True, key=f"save_player_{i}"):
-                                players[i].update({
-                                    "nickname": edit_nickname,
-                                    "number": int(edit_number),
-                                    "position": edit_position,
-                                    "height": int(edit_height) if edit_height else None,
-                                    "max_reach": int(edit_reach) if edit_reach else None,
-                                    "serve_types": edit_serves,
+                    ca, cb = st.columns(2)
+                    with ca:
+                        if st.button("追加する", type="primary", use_container_width=True, key="confirm_add_player"):
+                            if not new_name.strip():
+                                st.error("名前を入力してください")
+                            else:
+                                players.append({
+                                    "name": new_name.strip(),
+                                    "nickname": new_name.strip(),
+                                    "number": int(new_number),
+                                    "position": new_position,
+                                    "height": None,
+                                    "max_reach": None,
+                                    "serve_types": [],
                                 })
                                 st.session_state.players_master = players
                                 save_config()
-                                st.session_state.selected_player_idx = None
-                                st.success("保存しました")
+                                st.session_state.adding_player = False
+                                st.success(f"「{new_name.strip()}」を追加しました")
                                 st.rerun()
-                        with sb:
-                            if st.button("削除", use_container_width=True, key=f"delete_player_{i}"):
-                                players.pop(i)
-                                st.session_state.players_master = players
-                                save_config()
-                                st.session_state.selected_player_idx = None
-                                st.success(f"「{name}」を削除しました")
-                                st.rerun()
+                    with cb:
+                        if st.button("キャンセル", use_container_width=True, key="cancel_add_player"):
+                            st.session_state.adding_player = False
+                            st.rerun()
 
-    # --- TAB 2: Attack Patterns ---
-    with tab2:
-        st.caption("攻撃パターンの定義を編集します。")
-        current_patterns = st.session_state.attack_patterns
-        # attack_patterns is expected to be a list of dicts: [{"name": "A"}, ...]
-        # But if it's empty, we need correct structure.
-        if not current_patterns:
-            df_attacks = pd.DataFrame(columns=["name"])
-        else:
-            # Check if it's list of dicts or strings (legacy compatibility)
-            if isinstance(current_patterns[0], dict):
-                df_attacks = pd.DataFrame(current_patterns)
+            st.divider()
+
+            if not players:
+                st.info("選手が登録されていません。「＋ 選手を追加」から登録してください。")
             else:
-                df_attacks = pd.DataFrame({"name": current_patterns})
-        
-        # Ensure column 'name' exists
-        if "name" not in df_attacks.columns:
-            df_attacks["name"] = ""
+                serve_options = st.session_state.serve_types
+                for i, p in enumerate(players):
+                    if "serve_types" not in p:
+                        ds = p.get("default_serve", "")
+                        p["serve_types"] = [ds] if ds and ds != "なし" else []
+                    if "height" not in p:
+                        p["height"] = None
+                    if "max_reach" not in p:
+                        p["max_reach"] = None
 
-        edited_attacks = st.data_editor(
-            df_attacks,
-            num_rows="dynamic",
-            column_config={
-                "name": st.column_config.TextColumn("攻撃パターン名", required=True)
-            },
-            hide_index=True,
-            use_container_width=True,
-            key="editor_attacks"
-        )
-        
-        if st.button("攻撃パターンを保存"):
-            # extracted names
-            new_names = edited_attacks["name"].dropna().astype(str).tolist()
-            # Save as list of dicts: [{"name": "..."}]
-            st.session_state.attack_patterns = [{"name": n} for n in new_names if n.strip()]
-            save_config()
-            st.success("攻撃パターンを保存しました")
-            st.rerun()
+                    is_selected = st.session_state.selected_player_idx == i
+                    num = p.get("number", "")
+                    name = p.get("name", "")
+                    pos = p.get("position", "")
+                    icon = "▼ " if is_selected else "▶ "
 
-    # --- TAB 3: Serve Types ---
-    with tab3:
-        st.caption("サーブ種類の定義を編集します。")
-        current_serves = st.session_state.serve_types
-        df_serves = pd.DataFrame({"serve_type": current_serves})
-        
-        edited_serves = st.data_editor(
-            df_serves,
-            num_rows="dynamic",
-            column_config={
-                "serve_type": st.column_config.TextColumn("サーブ種類", required=True)
-            },
-            hide_index=True,
-            use_container_width=True,
-            key="editor_serves"
-        )
-        
-        if st.button("サーブ種類を保存"):
-            new_serves = edited_serves["serve_type"].dropna().astype(str).tolist()
-            new_serves = [s for s in new_serves if s.strip()]
-            st.session_state.serve_types = new_serves
-            save_config()
-            st.success("サーブ種類を保存しました")
-            st.rerun()
+                    if st.button(f"{icon}**{num}. {name}**　　{pos}", key=f"player_row_{i}", use_container_width=True):
+                        st.session_state.selected_player_idx = None if is_selected else i
+                        st.session_state.adding_player = False
+                        st.rerun()
 
-    # --- TAB 4: Viewer Management (admin only) ---
-    if is_admin:
-        with tab4:
+                    if is_selected:
+                        with st.container(border=True):
+                            st.markdown(f"**{name} の詳細情報**")
+                            d1, d2 = st.columns(2)
+                            with d1:
+                                edit_nickname = st.text_input("ニックネーム（表示名）", value=p.get("nickname", name), key=f"edit_nick_{i}")
+                                edit_height = st.number_input("身長 (cm)", min_value=0, max_value=250,
+                                    value=int(p["height"]) if p["height"] else 0, step=1, key=f"edit_height_{i}")
+                            with d2:
+                                edit_number = st.number_input("背番号", min_value=0, max_value=99,
+                                    value=int(num), step=1, key=f"edit_number_{i}")
+                                edit_reach = st.number_input("最高到達点 (cm)", min_value=0, max_value=400,
+                                    value=int(p["max_reach"]) if p["max_reach"] else 0, step=1, key=f"edit_reach_{i}")
+
+                            edit_position = st.selectbox(
+                                "ポジション", position_options,
+                                index=position_options.index(pos) if pos in position_options else 0,
+                                key=f"edit_pos_{i}"
+                            )
+                            edit_serves = st.multiselect(
+                                "サーブ種類（複数選択可）", options=serve_options,
+                                default=[s for s in p.get("serve_types", []) if s in serve_options],
+                                key=f"edit_serves_{i}"
+                            )
+
+                            sa, sb = st.columns(2)
+                            with sa:
+                                if st.button("保存", type="primary", use_container_width=True, key=f"save_player_{i}"):
+                                    players[i].update({
+                                        "nickname": edit_nickname,
+                                        "number": int(edit_number),
+                                        "position": edit_position,
+                                        "height": int(edit_height) if edit_height else None,
+                                        "max_reach": int(edit_reach) if edit_reach else None,
+                                        "serve_types": edit_serves,
+                                    })
+                                    st.session_state.players_master = players
+                                    save_config()
+                                    st.session_state.selected_player_idx = None
+                                    st.success("保存しました")
+                                    st.rerun()
+                            with sb:
+                                if st.button("削除", use_container_width=True, key=f"delete_player_{i}"):
+                                    players.pop(i)
+                                    st.session_state.players_master = players
+                                    save_config()
+                                    st.session_state.selected_player_idx = None
+                                    st.success(f"「{name}」を削除しました")
+                                    st.rerun()
+
+        # ---- 攻撃パターン ----
+        elif "攻撃パターン" in section:
+            st.caption("スパイク時に選択できる攻撃パターンを登録します。")
+            patterns = list(st.session_state.attack_patterns)
+
+            if "adding_pattern" not in st.session_state:
+                st.session_state.adding_pattern = False
+
+            col_pt, col_pa = st.columns([3, 1])
+            with col_pt:
+                st.markdown(f"**登録パターン: {len(patterns)}件**")
+            with col_pa:
+                if st.button("＋ 追加", type="primary", use_container_width=True, key="btn_add_pattern"):
+                    st.session_state.adding_pattern = True
+                    st.rerun()
+
+            if st.session_state.adding_pattern:
+                with st.container(border=True):
+                    new_pat_name = st.text_input("パターン名", key="new_pattern_name",
+                                                 placeholder="例: A, B, C, クイック")
+                    pa, pb = st.columns(2)
+                    with pa:
+                        if st.button("追加する", type="primary", use_container_width=True, key="confirm_add_pattern"):
+                            if new_pat_name.strip():
+                                patterns.append({"name": new_pat_name.strip()})
+                                st.session_state.attack_patterns = patterns
+                                save_config()
+                                st.session_state.adding_pattern = False
+                                st.success(f"「{new_pat_name.strip()}」を追加しました")
+                                st.rerun()
+                            else:
+                                st.error("パターン名を入力してください")
+                    with pb:
+                        if st.button("キャンセル", use_container_width=True, key="cancel_add_pattern"):
+                            st.session_state.adding_pattern = False
+                            st.rerun()
+
+            st.divider()
+
+            if not patterns:
+                st.info("攻撃パターンが登録されていません。「＋ 追加」から登録してください。")
+            else:
+                for i, pat in enumerate(patterns):
+                    p_name = pat["name"] if isinstance(pat, dict) else str(pat)
+                    with st.container(border=True):
+                        c_name, c_del = st.columns([5, 1])
+                        with c_name:
+                            st.markdown(f"**{p_name}**")
+                        with c_del:
+                            if st.button("削除", key=f"del_pattern_{i}", use_container_width=True):
+                                patterns.pop(i)
+                                st.session_state.attack_patterns = patterns
+                                save_config()
+                                st.rerun()
+
+        # ---- サーブ種類 ----
+        elif "サーブ種類" in section:
+            st.caption("サーブ入力時に選択できるサーブ種類を登録します。")
+            serves = list(st.session_state.serve_types)
+
+            if "adding_serve" not in st.session_state:
+                st.session_state.adding_serve = False
+
+            col_st, col_sa = st.columns([3, 1])
+            with col_st:
+                st.markdown(f"**登録サーブ: {len(serves)}種**")
+            with col_sa:
+                if st.button("＋ 追加", type="primary", use_container_width=True, key="btn_add_serve_type"):
+                    st.session_state.adding_serve = True
+                    st.rerun()
+
+            if st.session_state.adding_serve:
+                with st.container(border=True):
+                    new_serve_name = st.text_input("サーブ種類名", key="new_serve_name",
+                                                   placeholder="例: フローター, ジャンプサーブ")
+                    sa, sb = st.columns(2)
+                    with sa:
+                        if st.button("追加する", type="primary", use_container_width=True, key="confirm_add_serve_type"):
+                            if new_serve_name.strip():
+                                serves.append(new_serve_name.strip())
+                                st.session_state.serve_types = serves
+                                save_config()
+                                st.session_state.adding_serve = False
+                                st.success(f"「{new_serve_name.strip()}」を追加しました")
+                                st.rerun()
+                            else:
+                                st.error("サーブ種類名を入力してください")
+                    with sb:
+                        if st.button("キャンセル", use_container_width=True, key="cancel_add_serve_type"):
+                            st.session_state.adding_serve = False
+                            st.rerun()
+
+            st.divider()
+
+            if not serves:
+                st.info("サーブ種類が登録されていません。「＋ 追加」から登録してください。")
+            else:
+                for i, serve_name in enumerate(serves):
+                    with st.container(border=True):
+                        c_name, c_del = st.columns([5, 1])
+                        with c_name:
+                            st.markdown(f"**{serve_name}**")
+                        with c_del:
+                            if st.button("削除", key=f"del_serve_{i}", use_container_width=True):
+                                serves.pop(i)
+                                st.session_state.serve_types = serves
+                                save_config()
+                                st.rerun()
+
+        # ---- 利用者管理 ----
+        elif "利用者管理" in section:
             show_viewer_management()
 
 
@@ -2112,82 +2210,99 @@ def load_match_preview(path: str) -> dict:
 
 
 def show_data_analysis() -> None:
+    st.markdown("## データ分析")
 
-    st.header("データ分析")
-
-    saved = list_saved_matches()
+    saved = list_saved_matches(st.session_state.get("auth_team", "default"))
     if not saved:
-        st.info("保存済みの試合がありません。\nリアルタイム分析で試合を記録し、「試合終了」で保存してください。")
+        with st.container(border=True):
+            st.info("保存済みの試合がありません。リアルタイム分析で試合を記録し「試合終了」で保存してください。")
         return
 
-    # --- Match Selection UI ---
-    
-    # 1. Table View of All Matches
-    st.markdown("##### 📂 保存済みデータ一覧")
-    
-    # Prepare data for display
-    # We want to show metadata, but loading all files is heavy?
-    # Let's show basic file info first.
-    
-    # Basic table
-    df_files = pd.DataFrame(saved)
-    # Customize columns
-    if not df_files.empty:
-        df_display = df_files[["display_date", "tournament", "filename"]].copy()
-        df_display.columns = ["更新日時", "大会名", "ファイル名"]
-        
-        # Interactive Table
-        st.dataframe(
-            df_display,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "更新日時": st.column_config.TextColumn("更新日時", width="medium"),
-                "大会名": st.column_config.TextColumn("大会名", width="medium"),
-                "ファイル名": st.column_config.TextColumn("ファイル名", width="large"),
-            }
-        )
+    # Session state
+    if "da_selected_idx" not in st.session_state:
+        st.session_state.da_selected_idx = None
 
-    st.markdown("---")
-    
-    # 2. Select Box with formatted label
-    # Build options list with detailed label
-    options = []
-    for i, m in enumerate(saved):
-        label = f"【{m['display_date']}】 {m['tournament']} / {m['filename']}"
-        options.append(label)
+    tab_single, tab_multi = st.tabs(["　1試合分析　", "　まとめて分析　"])
 
-    st.markdown("##### 📊 分析対象の選択")
-    # Default to index 0 (latest)
-    selected_idx = st.selectbox("試合を選択してください", range(len(options)), format_func=lambda i: options[i], key="match_select")
+    # ===== TAB 1: 1試合分析 =====
+    with tab_single:
+        # Filter bar
+        with st.container(border=True):
+            fc1, fc2 = st.columns(2)
+            with fc1:
+                opponent_filter = st.text_input("対戦相手で絞り込み", placeholder="例: 甲西", key="da_single_opp")
+            with fc2:
+                all_dates = sorted({m["match_date"] or m["tournament"] for m in saved if m["match_date"] or m["tournament"]}, reverse=True)
+                date_options = ["すべて"] + all_dates
+                date_filter = st.selectbox("日付で絞り込み", date_options, key="da_single_date")
 
-    if selected_idx is not None:
-        match_info = saved[selected_idx]
-        
-        # Load metadata preview first
-        meta = load_match_preview(match_info["path"])
-        
-        # --- Selected Match Header ---
-        # Display large header for the selected match context
-        st.info(f"**選択中の試合:** {match_info['tournament']} - {match_info['filename']}")
-        
-        # Detailed Card
-        c1, c2, c3 = st.columns([2, 1, 2])
-        with c1:
-            st.markdown(f"**{meta['team']}**")
-        with c2:
-            st.markdown(f"<h3 style='text-align:center; margin:0;'>{meta['score']}</h3>", unsafe_allow_html=True)
-            st.markdown(f"<div style='text-align:center; font-size:0.8rem; color:gray;'>vs</div>", unsafe_allow_html=True)
-        with c3:
-            st.markdown(f"**{meta['opponent']}**")
-            
-        st.caption(f"試合日(目安): {meta['date']} | 更新: {match_info['display_date']}")
+        # Apply filters
+        filtered = [
+            m for m in saved
+            if (not opponent_filter or opponent_filter in (m.get("match_opponent") or m["filename"]))
+            and (date_filter == "すべて" or (m.get("match_date") or m["tournament"]) == date_filter)
+        ]
 
-        st.markdown("---")
+        if not filtered:
+            st.info("条件に一致する試合がありません。")
+        else:
+            st.caption(f"{len(filtered)} 件")
+            for i, m in enumerate(filtered):
+                opponent = m.get("match_opponent") or "—"
+                date = m.get("match_date") or m["tournament"] or "—"
+                is_selected = st.session_state.da_selected_idx == m["path"]
 
-        # Load Full Events
-        events = load_events_from_file(match_info["path"])
-        render_analysis_view(events, title="") # Title already shown in custom header
+                with st.container(border=True):
+                    c_info, c_btn = st.columns([5, 1])
+                    with c_info:
+                        st.markdown(f"**vs {opponent}**")
+                        st.caption(f"{date}　|　{m['filename']}")
+                    with c_btn:
+                        btn_lbl = "閉じる" if is_selected else "分析"
+                        if st.button(btn_lbl, key=f"da_card_{i}",
+                                     type="primary" if is_selected else "secondary",
+                                     use_container_width=True):
+                            st.session_state.da_selected_idx = None if is_selected else m["path"]
+                            st.rerun()
+
+                if is_selected:
+                    with st.container(border=True):
+                        events = load_events_from_file(m["path"])
+                        render_analysis_view(events, title="")
+
+    # ===== TAB 2: まとめて分析 =====
+    with tab_multi:
+        st.caption("対戦相手や日付で絞り込んだ複数試合をまとめて分析します。")
+        with st.container(border=True):
+            mc1, mc2 = st.columns(2)
+            with mc1:
+                multi_opp = st.text_input("対戦相手で絞り込み", placeholder="例: 甲西（空欄で全対象）", key="da_multi_opp")
+            with mc2:
+                multi_date = st.selectbox("日付で絞り込み", ["すべて"] + all_dates, key="da_multi_date")
+
+        multi_filtered = [
+            m for m in saved
+            if (not multi_opp or multi_opp in (m.get("match_opponent") or m["filename"]))
+            and (multi_date == "すべて" or (m.get("match_date") or m["tournament"]) == multi_date)
+        ]
+
+        if not multi_filtered:
+            st.info("条件に一致する試合がありません。")
+        else:
+            # Show filtered match list
+            for m in multi_filtered:
+                opponent = m.get("match_opponent") or "—"
+                date = m.get("match_date") or m["tournament"] or "—"
+                st.markdown(f"- {date}　**vs {opponent}**　{m['filename']}")
+
+            st.markdown("---")
+            if st.button(f"この {len(multi_filtered)} 試合をまとめて分析", type="primary", use_container_width=True, key="btn_multi_analyze"):
+                all_events = []
+                for m in multi_filtered:
+                    all_events.extend(load_events_from_file(m["path"]))
+                if all_events:
+                    st.markdown("### 分析結果")
+                    render_analysis_view(all_events, title="")
 
 
 def get_player_short(pname: str) -> str:
@@ -2279,9 +2394,6 @@ def record_event(event: dict) -> None:
         toast_msg = f"✅ 交代 - {get_player_short(event.get('player_in',''))} ← {get_player_short(event.get('player_out',''))}"
     else:
         toast_msg = f"✅ 記録しました"
-    if toast_msg:
-        st.toast(toast_msg)
-
     if toast_msg:
         st.toast(toast_msg)
 
@@ -2533,54 +2645,71 @@ def apply_point(team: str) -> None:
 
 
 def show_setup_screen() -> None:
-    st.header("試合セットアップ")
+    st.markdown("## 試合セットアップ")
 
     ensure_data_dir()
     path = get_current_match_path()
+
+    # --- 前回データの復元バナー ---
     if os.path.exists(path):
-        st.warning("前回の試合データ（未保存）が見つかりました。")
-
-        col_r1, col_r2 = st.columns(2)
-        with col_r1:
-            if st.button("▶ 前回の続きから再開", key="resume_btn"):
-                if load_current_match():
-                    st.success("前回の試合を復元しました。")
+        with st.container(border=True):
+            st.warning("前回の試合データ（未保存）が見つかりました。")
+            col_r1, col_r2 = st.columns(2)
+            with col_r1:
+                if st.button("▶ 前回の続きから再開", key="resume_btn", use_container_width=True):
+                    if load_current_match():
+                        st.success("前回の試合を復元しました。")
+                        st.rerun()
+                    else:
+                        st.error("復元に失敗しました。")
+            with col_r2:
+                if st.button("新規で開始（前回データ破棄）", key="new_match_btn", use_container_width=True):
+                    reset_current_match_file()
+                    st.session_state.is_analysis_active = False
+                    st.session_state.events = {f"Set{i}": [] for i in range(1, 6)}
+                    st.session_state.current_set = 1
+                    st.session_state.score_own = 0
+                    st.session_state.score_opponent = 0
+                    st.session_state.libero_in_court = False
+                    st.session_state.selected_player = None
+                    st.session_state.selected_attack = None
+                    st.session_state.selected_serve = None
+                    st.session_state.selected_result = None
+                    st.session_state.reception_grade = None
+                    st.session_state.start_area = None
+                    st.session_state.end_area = None
+                    st.session_state.is_error_mode = False
+                    st.session_state.error_team = None
+                    st.session_state.is_libero_mode = False
+                    st.session_state.court_key_id = 0
                     st.rerun()
-                else:
-                    st.error("復元に失敗しました。")
 
-        with col_r2:
-            if st.button("🆕 新規で開始（前回データ破棄）", key="new_match_btn"):
-                reset_current_match_file()
-                st.session_state.is_analysis_active = False
-                st.session_state.events = {f"Set{i}": [] for i in range(1, 6)}
-                st.session_state.current_set = 1
-                st.session_state.score_own = 0
-                st.session_state.score_opponent = 0
-                st.session_state.libero_in_court = False
+    # ===== STEP 1: 試合情報 =====
+    st.markdown("#### Step 1　試合情報")
+    with st.container(border=True):
+        c1, c2 = st.columns(2)
+        with c1:
+            new_date = st.text_input(
+                "日付", value=st.session_state.match_date,
+                placeholder="例: 2025/08/31", key="setup_match_date"
+            )
+            st.session_state.match_date = new_date
+            st.session_state.tournament_name = new_date
+        with c2:
+            new_opponent = st.text_input(
+                "対戦相手", value=st.session_state.match_opponent,
+                placeholder="例: 甲西高校", key="setup_match_opponent"
+            )
+            st.session_state.match_opponent = new_opponent
 
-                st.session_state.selected_player = None
-                st.session_state.selected_attack = None
-                st.session_state.selected_serve = None
-                st.session_state.selected_result = None
-                st.session_state.reception_grade = None
-                st.session_state.start_area = None
-                st.session_state.end_area = None
-                st.session_state.is_error_mode = False
-                st.session_state.error_team = None
-                st.session_state.is_libero_mode = False
-                st.session_state.court_key_id = 0
+        new_filename = st.text_input(
+            "ファイル名（試合の識別名）", value=st.session_state.file_name,
+            placeholder="例: 第一試合、準決勝", key="setup_file_name"
+        )
+        st.session_state.file_name = new_filename
 
-                st.success("新規で開始します。下の項目を入力してください。")
-
-    st.session_state.tournament_name = st.text_input(
-        "フォルダ名", value=st.session_state.tournament_name, placeholder="2025/01/02 春高"
-    )
-    st.session_state.file_name = st.text_input(
-        "ファイル名", value=st.session_state.file_name, placeholder="vs○○高校、第一試合"
-    )
-
-    st.subheader("スターティングローテ設定（6人）")
+    # ===== STEP 2: スターティングローテ =====
+    st.markdown("#### Step 2　スターティングローテ（6人）")
     # Make sure we have players
     if not st.session_state.players_master:
         st.error("選手が登録されていません。各種登録で選手を追加してください。")
@@ -2697,8 +2826,9 @@ def show_setup_screen() -> None:
     if "mb_later_swap" not in st.session_state:
         st.session_state.mb_later_swap = [] # Stack for MBs who are out
 
-    if st.button("分析開始", type="primary"):
-        if st.session_state.tournament_name and st.session_state.file_name and all(st.session_state.starting_rotation):
+    st.markdown("#### Step 3　試合開始")
+    if st.button("試合を開始する", type="primary", use_container_width=True):
+        if st.session_state.match_date and st.session_state.match_opponent and st.session_state.file_name and all(st.session_state.starting_rotation):
             # --- New: Libero Selection ---
             st.session_state.is_analysis_active = True
             st.session_state.rotation = st.session_state.starting_rotation.copy()
@@ -2774,7 +2904,7 @@ def show_setup_screen() -> None:
             save_current_match_snapshot()
             st.rerun()
         else:
-            st.error("すべての項目を入力してください")
+            st.error("日付・対戦相手・ファイル名をすべて入力してください")
 
 
 def show_analysis_screen() -> None:
@@ -2821,7 +2951,8 @@ def show_analysis_screen() -> None:
 
     # --- In-match analysis mode ---
     if st.session_state.is_in_match_analysis:
-        st.header(f"📊 試合中分析 - {st.session_state.tournament_name}")
+        opponent = st.session_state.get("match_opponent") or st.session_state.tournament_name
+        st.header(f"📊 試合中分析 - vs {opponent}")
         if st.button("← 試合に戻る", key="back_from_analysis", type="primary"):
             st.session_state.is_in_match_analysis = False
             st.rerun()
@@ -2832,7 +2963,8 @@ def show_analysis_screen() -> None:
     # --- Compact Header & Score ---
     # --- Compact Header & Score ---
     # st.subheader(f"{st.session_state.tournament_name} / Set {st.session_state.current_set}")
-    st.markdown(f"**{st.session_state.tournament_name}** | **Set {st.session_state.current_set}**")
+    opponent = st.session_state.get("match_opponent") or st.session_state.tournament_name
+    st.markdown(f"**vs {opponent}** | **Set {st.session_state.current_set}**")
     
     # serve_char = "🏐" -> Removed emoji
     serve_char = "●"
@@ -3557,6 +3689,24 @@ def show_analysis_screen() -> None:
                         st.session_state.tournament_name,
                         st.session_state.file_name
                     )
+                    list_saved_matches.clear()  # Invalidate match list cache
+                    # Compute summary before resetting state
+                    _flat = flatten_events(st.session_state.events)
+                    _serve_e = [e for e in _flat if e.get("action") == "serve"]
+                    _spike_e = [e for e in _flat if e.get("action") == "spike"]
+                    _block_e = [e for e in _flat if e.get("action") == "block"]
+                    st.session_state.match_summary = {
+                        "opponent": st.session_state.get("match_opponent", "—"),
+                        "date": st.session_state.get("match_date", "—"),
+                        "filename": st.session_state.get("file_name", ""),
+                        "sets": st.session_state.current_set,
+                        "serve_count": len(_serve_e),
+                        "spike_count": len(_spike_e),
+                        "ace_count": len([e for e in _serve_e if e.get("result") == "得点"]),
+                        "kill_count": len([e for e in _spike_e if e.get("result") == "得点"]),
+                        "block_count": len([e for e in _block_e if e.get("result") == "得点"]),
+                    }
+                    st.session_state.show_match_summary = True
                     st.session_state.is_analysis_active = False
                     st.session_state.confirm_end_match = False
                     # Reset match state
@@ -3566,7 +3716,6 @@ def show_analysis_screen() -> None:
                     st.session_state.score_opponent = 0
                     st.session_state.libero_in_court = False
                     st.session_state.libero_replaced_player = None
-                    st.toast("🏆 試合データを保存しました！")
                     st.rerun()
             with me2:
                 if st.button("❌ キャンセル", key="confirm_end_match_no", use_container_width=True):
@@ -3652,6 +3801,42 @@ def show_login_screen():
                         else:
                             st.error(f"「{new_team}」はすでに登録されています")
 
+def show_match_summary_screen() -> None:
+    summary = st.session_state.get("match_summary", {})
+    st.markdown("## 試合終了")
+
+    with st.container(border=True):
+        st.markdown(f"### vs {summary.get('opponent', '—')}")
+        st.caption(f"日付: {summary.get('date', '—')}　|　ファイル: {summary.get('filename', '—')}")
+        st.divider()
+        c1, c2, c3, c4, c5 = st.columns(5)
+        with c1:
+            st.metric("セット数", summary.get("sets", "—"))
+        with c2:
+            st.metric("サーブ", summary.get("serve_count", 0))
+        with c3:
+            st.metric("スパイク", summary.get("spike_count", 0))
+        with c4:
+            st.metric("エース", summary.get("ace_count", 0))
+        with c5:
+            st.metric("ブロック得点", summary.get("block_count", 0))
+
+    st.success("試合データを保存しました。")
+    st.markdown("---")
+    col_a, col_b = st.columns(2)
+    with col_a:
+        if st.button("データ分析を見る", type="primary", use_container_width=True, key="summary_to_analysis"):
+            st.session_state.show_match_summary = False
+            st.session_state.match_summary = {}
+            st.session_state["main_nav"] = "データ分析"
+            st.rerun()
+    with col_b:
+        if st.button("セットアップへ戻る", use_container_width=True, key="summary_to_setup"):
+            st.session_state.show_match_summary = False
+            st.session_state.match_summary = {}
+            st.rerun()
+
+
 def get_local_ip():
     import socket
     try:
@@ -3679,10 +3864,11 @@ def main_app():
 
         # Match Status Widget (if active)
         if st.session_state.is_analysis_active:
+            opponent = st.session_state.get("match_opponent") or st.session_state.tournament_name
             st.info(f"""
             **試合進行中**
             \n{st.session_state.score_own} - {st.session_state.score_opponent} (Set {st.session_state.current_set})
-            \n{st.session_state.tournament_name}
+            \nvs {opponent}
             """)
             st.markdown("---")
 
@@ -3701,6 +3887,11 @@ def main_app():
             st.session_state.auth_team = None
             st.session_state.role = None
             st.rerun()
+
+    # --- Post-match summary overrides normal routing ---
+    if st.session_state.get("show_match_summary"):
+        show_match_summary_screen()
+        return
 
     # --- Routing Logic ---
     # Case 1: Real-time Analysis selected
