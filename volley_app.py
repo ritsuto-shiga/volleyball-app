@@ -331,8 +331,32 @@ def save_users(users: dict) -> None:
         f.write(data)
 
 
+def find_account(team_name: str, password: str) -> dict | None:
+    """チーム名+パスワードでアカウントを検索。見つかれば {"role", "display_name"} を返す。"""
+    users = load_users()
+    team = users.get(team_name)
+    if team is None:
+        return None
+    if team.get("admin_password") == password:
+        return {"role": "admin", "display_name": team_name}
+    for v in team.get("viewers", []):
+        if v.get("password") == password:
+            return {"role": "viewer", "display_name": v["name"]}
+    return None
+
+
+def register_admin(team_name: str, password: str) -> bool:
+    """管理者アカウントを新規作成。すでに存在する場合は False を返す。"""
+    users = load_users()
+    if team_name in users:
+        return False
+    users[team_name] = {"admin_password": password, "viewers": []}
+    save_users(users)
+    return True
+
+
 def get_user_data_dir() -> str:
-    user = st.session_state.get("username", "default")
+    user = st.session_state.get("auth_team", "default")
     path = os.path.join(DATA_ROOT, user)
     os.makedirs(path, exist_ok=True)
     return path
@@ -363,7 +387,7 @@ def save_config() -> None:
     }
     content = json.dumps(data, ensure_ascii=False, indent=4)
     # try GCS
-    username = st.session_state.get("username", "default")
+    username = st.session_state.get("auth_team", "default")
     path = f"data/{username}/config.json"
     try:
         gcs_upload(path, content, "application/json")
@@ -376,7 +400,7 @@ def save_config() -> None:
 
 def load_config() -> None:
     # try cloud storage
-    username = st.session_state.get("username", "default")
+    username = st.session_state.get("auth_team", "default")
     path = f"data/{username}/config.json"
     content = gcs_download(path)
     if content is not None:
@@ -431,7 +455,7 @@ def ensure_data_dir() -> None:
 def append_current_match_event(event: dict) -> None:
     """Append one event to jsonl and keep it durable."""
     ensure_data_dir()
-    username = st.session_state.get("username", "default")
+    username = st.session_state.get("auth_team", "default")
     path = f"data/{username}/current_match.jsonl"
     # build new line
     new_line = json.dumps(event, ensure_ascii=False) + "\n"
@@ -450,7 +474,7 @@ def append_current_match_event(event: dict) -> None:
 def save_current_match_snapshot() -> None:
     """Rewrite jsonl snapshot from session_state.events (Set dict)."""
     ensure_data_dir()
-    username = st.session_state.get("username", "default")
+    username = st.session_state.get("auth_team", "default")
     path = f"data/{username}/current_match.jsonl"
     lines = []
     for set_key, events in st.session_state.events.items():
@@ -478,7 +502,7 @@ def save_match_meta() -> None:
         "file_name": st.session_state.get("file_name", ""),
     }
     content = json.dumps(data, ensure_ascii=False, indent=4)
-    username = st.session_state.get("username", "default")
+    username = st.session_state.get("auth_team", "default")
     path = f"data/{username}/current_match_meta.json"
     try:
         gcs_upload(path, content, "application/json")
@@ -491,7 +515,7 @@ def save_match_meta() -> None:
 
 def load_match_meta() -> None:
     """Load tournament and file name from json file."""
-    username = st.session_state.get("username", "default")
+    username = st.session_state.get("auth_team", "default")
     path = f"data/{username}/current_match_meta.json"
     content = gcs_download(path)
     if content is not None:
@@ -512,7 +536,7 @@ def load_match_meta() -> None:
 
 def load_current_match() -> bool:
     """Load jsonl into session_state if exists."""
-    username = st.session_state.get("username", "default")
+    username = st.session_state.get("auth_team", "default")
     path = f"data/{username}/current_match.jsonl"
     content = gcs_download(path)
     if content is None:
@@ -726,6 +750,10 @@ def init_session_state() -> None:
         st.session_state.logged_in = False
     if "username" not in st.session_state:
         st.session_state.username = None
+    if "auth_team" not in st.session_state:
+        st.session_state.auth_team = None
+    if "role" not in st.session_state:
+        st.session_state.role = None
 
     # rotation logic
     if "serving_team" not in st.session_state:
@@ -775,59 +803,197 @@ init_session_state()
 # ============================================================
 # UI parts
 # ============================================================
+def show_viewer_management() -> None:
+    """利用者アカウントの追加・削除（管理者専用）。"""
+    team_name = st.session_state.auth_team
+    users = load_users()
+    team = users.get(team_name, {})
+    viewers = team.get("viewers", [])
+
+    st.caption(f"選手などが閲覧専用でログインできる利用者アカウントを管理します。\nログイン時は チーム名「{team_name}」と下記のパスワードを使います。")
+
+    if viewers:
+        st.markdown("**現在の利用者アカウント**")
+        for i, v in enumerate(viewers):
+            c1, c2, c3 = st.columns([3, 4, 1])
+            with c1:
+                st.text(v["name"])
+            with c2:
+                st.text("••••••••")
+            with c3:
+                if st.button("削除", key=f"del_viewer_{i}"):
+                    viewers.pop(i)
+                    team["viewers"] = viewers
+                    users[team_name] = team
+                    save_users(users)
+                    st.success(f"「{v['name']}」を削除しました")
+                    st.rerun()
+    else:
+        st.info("利用者アカウントはまだありません")
+
+    st.divider()
+    st.markdown("**利用者を追加**")
+    with st.container(border=True):
+        new_name = st.text_input("利用者名（選手名など）", key="new_viewer_name")
+        new_pass = st.text_input("パスワード", type="password", key="new_viewer_pass")
+        if st.button("追加", type="primary", key="btn_add_viewer"):
+            if not new_name or not new_pass:
+                st.error("名前とパスワードを入力してください")
+            elif any(v["name"] == new_name for v in viewers):
+                st.error(f"「{new_name}」はすでに登録されています")
+            else:
+                viewers.append({"name": new_name, "password": new_pass})
+                team["viewers"] = viewers
+                users[team_name] = team
+                save_users(users)
+                st.success(f"「{new_name}」を追加しました")
+                st.rerun()
+
+
 def show_registration_mode() -> None:
     st.subheader("各種マスター登録 (プロ仕様)")
 
-    tab1, tab2, tab3 = st.tabs(["選手マスター", "攻撃パターン", "サーブ種類"])
+    is_admin = st.session_state.get("role") == "admin"
+    if is_admin:
+        tab1, tab2, tab3, tab4 = st.tabs(["選手マスター", "攻撃パターン", "サーブ種類", "利用者管理"])
+    else:
+        tab1, tab2, tab3 = st.tabs(["選手マスター", "攻撃パターン", "サーブ種類"])
 
     # --- TAB 1: Player Master ---
     with tab1:
-        st.caption("選手一覧を直接編集できます。行を追加・削除・編集し、「保存」ボタンを押してください。")
-        
-        # Convert list of dicts to DataFrame for editing
-        if not st.session_state.players_master:
-            # Initialize with empty structure if empty
-            df_players = pd.DataFrame(columns=["name", "nickname", "number", "position", "default_serve"])
-        else:
-            df_players = pd.DataFrame(st.session_state.players_master)
-            # Ensure columns exist
-            expected_cols = ["name", "nickname", "number", "position", "default_serve"]
-            for c in expected_cols:
-                if c not in df_players.columns:
-                    df_players[c] = ""
-                    
-        # Config for data_editor
-        serve_options = ["なし"] + st.session_state.serve_types
+        players = st.session_state.players_master
         position_options = ["S", "OH", "MB", "OP", "L"]
 
-        edited_df = st.data_editor(
-            df_players,
-            num_rows="dynamic",
-            column_config={
-                "name": st.column_config.TextColumn("名前", required=True),
-                "nickname": st.column_config.TextColumn("ニックネーム (表示名)", required=True),
-                "number": st.column_config.NumberColumn("背番号", min_value=0, max_value=99, format="%d", required=True),
-                "position": st.column_config.SelectboxColumn("ポジション", options=position_options, required=True),
-                "default_serve": st.column_config.SelectboxColumn("デフォルトサーブ", options=serve_options)
-            },
-            hide_index=True,
-            use_container_width=True,
-            key="editor_players"
-        )
-        
-        if st.button("選手データを保存", type="primary"):
-            # Validation
-            # 1. Libero Limit (Max 2)
-            liberos = edited_df[edited_df["position"] == "L"]
-            if len(liberos) > 2:
-                st.error(f"リベロは最大2名までです (現在: {len(liberos)}名)")
-            else:
-                edited_df = edited_df.fillna("")
-                new_master = edited_df.to_dict(orient="records")
-                st.session_state.players_master = new_master
-                save_config()
-                st.success("選手データを保存しました")
+        # Session state for player UI
+        if "adding_player" not in st.session_state:
+            st.session_state.adding_player = False
+        if "selected_player_idx" not in st.session_state:
+            st.session_state.selected_player_idx = None
+
+        # Header
+        col_title, col_add = st.columns([3, 1])
+        with col_title:
+            st.markdown(f"**登録選手: {len(players)}名**")
+        with col_add:
+            if st.button("＋ 選手を追加", type="primary", use_container_width=True, key="btn_open_add_player"):
+                st.session_state.adding_player = True
+                st.session_state.selected_player_idx = None
                 st.rerun()
+
+        # Add player form
+        if st.session_state.adding_player:
+            with st.container(border=True):
+                st.markdown("**新しい選手を追加**")
+                c1, c2, c3 = st.columns([1, 2, 3])
+                with c1:
+                    new_number = st.number_input("背番号", min_value=0, max_value=99, step=1, key="new_player_number")
+                with c2:
+                    new_position = st.selectbox("ポジション", position_options, key="new_player_position")
+                with c3:
+                    new_name = st.text_input("名前", key="new_player_name")
+
+                ca, cb = st.columns(2)
+                with ca:
+                    if st.button("追加する", type="primary", use_container_width=True, key="confirm_add_player"):
+                        if not new_name.strip():
+                            st.error("名前を入力してください")
+                        else:
+                            players.append({
+                                "name": new_name.strip(),
+                                "nickname": new_name.strip(),
+                                "number": int(new_number),
+                                "position": new_position,
+                                "height": None,
+                                "max_reach": None,
+                                "serve_types": [],
+                            })
+                            st.session_state.players_master = players
+                            save_config()
+                            st.session_state.adding_player = False
+                            st.success(f"「{new_name.strip()}」を追加しました")
+                            st.rerun()
+                with cb:
+                    if st.button("キャンセル", use_container_width=True, key="cancel_add_player"):
+                        st.session_state.adding_player = False
+                        st.rerun()
+
+        st.divider()
+
+        # Player list
+        if not players:
+            st.info("選手が登録されていません。「＋ 選手を追加」から登録してください。")
+        else:
+            serve_options = st.session_state.serve_types
+            for i, p in enumerate(players):
+                # Backward compat: migrate default_serve → serve_types
+                if "serve_types" not in p:
+                    ds = p.get("default_serve", "")
+                    p["serve_types"] = [ds] if ds and ds != "なし" else []
+                if "height" not in p:
+                    p["height"] = None
+                if "max_reach" not in p:
+                    p["max_reach"] = None
+
+                is_selected = st.session_state.selected_player_idx == i
+                num = p.get("number", "")
+                name = p.get("name", "")
+                pos = p.get("position", "")
+                icon = "▼ " if is_selected else "▶ "
+
+                if st.button(f"{icon}**{num}. {name}**　　{pos}", key=f"player_row_{i}", use_container_width=True):
+                    st.session_state.selected_player_idx = None if is_selected else i
+                    st.session_state.adding_player = False
+                    st.rerun()
+
+                if is_selected:
+                    with st.container(border=True):
+                        st.markdown(f"**{name} の詳細情報**")
+                        d1, d2 = st.columns(2)
+                        with d1:
+                            edit_nickname = st.text_input("ニックネーム（表示名）", value=p.get("nickname", name), key=f"edit_nick_{i}")
+                            edit_height = st.number_input("身長 (cm)", min_value=0, max_value=250,
+                                value=int(p["height"]) if p["height"] else 0, step=1, key=f"edit_height_{i}")
+                        with d2:
+                            edit_number = st.number_input("背番号", min_value=0, max_value=99,
+                                value=int(num), step=1, key=f"edit_number_{i}")
+                            edit_reach = st.number_input("最高到達点 (cm)", min_value=0, max_value=400,
+                                value=int(p["max_reach"]) if p["max_reach"] else 0, step=1, key=f"edit_reach_{i}")
+
+                        edit_position = st.selectbox(
+                            "ポジション", position_options,
+                            index=position_options.index(pos) if pos in position_options else 0,
+                            key=f"edit_pos_{i}"
+                        )
+                        edit_serves = st.multiselect(
+                            "サーブ種類（複数選択可）", options=serve_options,
+                            default=[s for s in p.get("serve_types", []) if s in serve_options],
+                            key=f"edit_serves_{i}"
+                        )
+
+                        sa, sb = st.columns(2)
+                        with sa:
+                            if st.button("保存", type="primary", use_container_width=True, key=f"save_player_{i}"):
+                                players[i].update({
+                                    "nickname": edit_nickname,
+                                    "number": int(edit_number),
+                                    "position": edit_position,
+                                    "height": int(edit_height) if edit_height else None,
+                                    "max_reach": int(edit_reach) if edit_reach else None,
+                                    "serve_types": edit_serves,
+                                })
+                                st.session_state.players_master = players
+                                save_config()
+                                st.session_state.selected_player_idx = None
+                                st.success("保存しました")
+                                st.rerun()
+                        with sb:
+                            if st.button("削除", use_container_width=True, key=f"delete_player_{i}"):
+                                players.pop(i)
+                                st.session_state.players_master = players
+                                save_config()
+                                st.session_state.selected_player_idx = None
+                                st.success(f"「{name}」を削除しました")
+                                st.rerun()
 
     # --- TAB 2: Attack Patterns ---
     with tab2:
@@ -892,6 +1058,11 @@ def show_registration_mode() -> None:
             save_config()
             st.success("サーブ種類を保存しました")
             st.rerun()
+
+    # --- TAB 4: Viewer Management (admin only) ---
+    if is_admin:
+        with tab4:
+            show_viewer_management()
 
 
 def flatten_events(events_by_set: dict) -> list[dict]:
@@ -2272,11 +2443,12 @@ def apply_point(team: str) -> None:
                         break
                 st.session_state.selected_player = found_p
                 
-                # Auto-select default serve type if available
-                if found_p and "default_serve" in found_p:
-                     if found_p["default_serve"] in st.session_state.serve_types:
-                        st.session_state.selected_serve = found_p["default_serve"]
-                    
+                # Auto-select first serve type if available
+                if found_p:
+                    _serves = found_p.get("serve_types") or ([found_p["default_serve"]] if found_p.get("default_serve") and found_p.get("default_serve") != "なし" else [])
+                    if _serves and _serves[0] in st.session_state.serve_types:
+                        st.session_state.selected_serve = _serves[0]
+
         # else: we were serving and scored -> no rotation, keep serving.
         # Action should be "serve" (continuing)
         # PROBLEM FIX: Even if rotation doesn't change, we must reset the server!
@@ -2291,10 +2463,11 @@ def apply_point(team: str) -> None:
                     found_p = p
                     break
             st.session_state.selected_player = found_p
-             # Auto-select default serve type if available
-            if found_p and "default_serve" in found_p:
-                if found_p["default_serve"] in st.session_state.serve_types:
-                    st.session_state.selected_serve = found_p["default_serve"]
+            # Auto-select first serve type if available
+            if found_p:
+                _serves = found_p.get("serve_types") or ([found_p["default_serve"]] if found_p.get("default_serve") and found_p.get("default_serve") != "なし" else [])
+                if _serves and _serves[0] in st.session_state.serve_types:
+                    st.session_state.selected_serve = _serves[0]
     else:
         st.session_state.score_opponent += 1
         if current_serve == "own":
@@ -3077,10 +3250,11 @@ def show_analysis_screen() -> None:
                     
                     if found:
                         st.session_state.selected_player = found
-                        # Auto-select default serve type if available and action is serve
+                        # Auto-select first serve type if available and action is serve
                         if st.session_state.current_action == "serve":
-                            if "default_serve" in found and found["default_serve"] in st.session_state.serve_types:
-                                st.session_state.selected_serve = found["default_serve"]
+                            _serves = found.get("serve_types") or ([found["default_serve"]] if found.get("default_serve") and found.get("default_serve") != "なし" else [])
+                            if _serves and _serves[0] in st.session_state.serve_types:
+                                st.session_state.selected_serve = _serves[0]
                             else:
                                 st.session_state.selected_serve = None
                         
@@ -3407,42 +3581,76 @@ def show_analysis_screen() -> None:
 # Sidebar & top-level routing
 # ============================================================
 def show_login_screen():
-    st.markdown("<h1 style='text-align: center;'>バレーボール戦術分析 V4</h1>", unsafe_allow_html=True)
-    st.markdown("<h3 style='text-align: center;'>ログイン</h3>", unsafe_allow_html=True)
+    st.markdown("""
+    <style>
+        .stApp { background: linear-gradient(160deg, #e8f4fd 0%, #f0f7ff 50%, #e8f0fe 100%) !important; }
+        .login-logo { text-align: center; font-size: 3.5rem; margin-bottom: 0.25rem; }
+        .login-title {
+            text-align: center; font-size: 1.6rem; font-weight: 800;
+            color: #1e3a5f !important; letter-spacing: 0.02em; margin-bottom: 0.15rem;
+        }
+        .login-subtitle {
+            text-align: center; font-size: 0.8rem; color: #5a7fa8 !important;
+            letter-spacing: 0.12em; text-transform: uppercase; margin-bottom: 2rem;
+        }
+        div[data-testid="stTabs"] button { color: #5a7fa8 !important; font-weight: 600; }
+        div[data-testid="stTabs"] button[aria-selected="true"] { color: #0369a1 !important; }
+        .login-note {
+            font-size: 0.78rem; color: #5a7fa8 !important;
+            text-align: center; margin-top: 1rem;
+        }
+    </style>
+    """, unsafe_allow_html=True)
 
-    col_c, _ = st.columns([1, 1])  # Center somewhat
-    with st.container(border=True):
-        username = st.text_input("ユーザー名")
-        password = st.text_input("パスワード", type="password")
-        
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("ログイン", type="primary", use_container_width=True):
-                users = load_users()
-                # Create admin if not exists (first run)
-                if not users and username == "admin" and password == "admin":
-                   users["admin"] = "admin"
-                   save_users(users)
-                
-                if username in users and users[username] == password:
-                    st.session_state.logged_in = True
-                    st.session_state.username = username
-                    load_config()  # Reload config from user-specific directory
-                    st.rerun()
-                else:
-                    st.error("ユーザー名かパスワードが違います")
-        
-        with c2:
-            if st.button("新規登録", use_container_width=True):
-                users = load_users()
-                if not username or not password:
-                    st.error("入力してください")
-                elif username in users:
-                    st.error("そのユーザー名は使われています")
-                else:
-                    users[username] = password
-                    save_users(users)
-                    st.success("登録しました！ログインしてください。")
+    _, center, _ = st.columns([1, 1.4, 1])
+    with center:
+        st.markdown('<div class="login-logo">🏐</div>', unsafe_allow_html=True)
+        st.markdown('<div class="login-title">バレーボール戦術分析</div>', unsafe_allow_html=True)
+        st.markdown('<div class="login-subtitle">Team Analysis System</div>', unsafe_allow_html=True)
+
+        tab_login, tab_register = st.tabs(["　ログイン　", "　新規作成（管理者）　"])
+
+        with tab_login:
+            with st.container(border=True):
+                team_input = st.text_input("チーム名", key="login_team", placeholder="チーム名を入力")
+                pass_input = st.text_input("パスワード", type="password", key="login_pass", placeholder="パスワードを入力")
+
+                if st.button("ログイン", type="primary", use_container_width=True, key="btn_login"):
+                    if not team_input or not pass_input:
+                        st.error("チーム名とパスワードを入力してください")
+                    else:
+                        result = find_account(team_input, pass_input)
+                        if result is None:
+                            st.error("チーム名またはパスワードが違います")
+                        else:
+                            st.session_state.logged_in = True
+                            st.session_state.auth_team = team_input
+                            st.session_state.username = result["display_name"]
+                            st.session_state.role = result["role"]
+                            load_config()
+                            st.rerun()
+
+                st.markdown('<div class="login-note">利用者の方はチーム名と配布されたパスワードでログインしてください</div>', unsafe_allow_html=True)
+
+        with tab_register:
+            with st.container(border=True):
+                st.caption("マネージャー・指導者など管理者アカウントを作成します。")
+                new_team = st.text_input("チーム名", key="reg_team", placeholder="例：さくら高校バレー部")
+                new_pass = st.text_input("パスワード", type="password", key="reg_pass", placeholder="パスワードを設定（4文字以上）")
+                new_pass2 = st.text_input("パスワード（確認）", type="password", key="reg_pass2", placeholder="パスワードを再入力")
+
+                if st.button("管理者アカウントを作成", type="primary", use_container_width=True, key="btn_register"):
+                    if not new_team or not new_pass:
+                        st.error("チーム名とパスワードを入力してください")
+                    elif new_pass != new_pass2:
+                        st.error("パスワードが一致しません")
+                    elif len(new_pass) < 4:
+                        st.error("パスワードは4文字以上で設定してください")
+                    else:
+                        if register_admin(new_team, new_pass):
+                            st.success(f"「{new_team}」の管理者アカウントを作成しました。ログインしてください。")
+                        else:
+                            st.error(f"「{new_team}」はすでに登録されています")
 
 def get_local_ip():
     import socket
@@ -3465,8 +3673,10 @@ def main_app():
     # --- Professional Sidebar ---
     with st.sidebar:
         st.markdown("## 🏐 バレーボール分析 V4")
-        st.caption(f"User: {st.session_state.username}")
-        
+        role = st.session_state.get("role", "viewer")
+        role_label = "管理者" if role == "admin" else "利用者"
+        st.caption(f"{st.session_state.auth_team}  |  {st.session_state.username}  ({role_label})")
+
         # Match Status Widget (if active)
         if st.session_state.is_analysis_active:
             st.info(f"""
@@ -3476,20 +3686,20 @@ def main_app():
             """)
             st.markdown("---")
 
-        # Navigation Menu
-        # Use simple radio with detailed formatting or custom components
-        # We use radio but style it to look like menu
-        
-        # Define menu items
-        menu_items = ["リアルタイム分析", "データ分析", "各種登録"]
-        
-        # If match is active, "Real-time Analysis" takes you back to the match
+        # Navigation Menu (role-based)
+        if role == "admin":
+            menu_items = ["リアルタイム分析", "データ分析", "各種登録"]
+        else:
+            menu_items = ["データ分析"]
+
         nav_selection = st.radio("メニュー", menu_items, key="main_nav")
-        
+
         st.markdown("---")
         if st.button("ログアウト", use_container_width=True):
             st.session_state.logged_in = False
             st.session_state.username = None
+            st.session_state.auth_team = None
+            st.session_state.role = None
             st.rerun()
 
     # --- Routing Logic ---

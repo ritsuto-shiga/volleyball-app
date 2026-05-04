@@ -1,4 +1,10 @@
 {
-    "ritauto": "Ritsuto0310",
-    "ritsuto": "Ritsuto0310"
+    "ritsuto": {
+        "admin_password": "Ritsuto0310",
+        "viewers": []
+    },
+    "ritauto": {
+        "admin_password": "Ritsuto0310",
+        "viewers": []
+    }
 }
