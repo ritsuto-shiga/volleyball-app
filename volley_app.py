@@ -736,6 +736,10 @@ def init_session_state() -> None:
         st.session_state.file_name = ""
     if "starting_rotation" not in st.session_state:
         st.session_state.starting_rotation = ["" for _ in range(6)]
+    if "rot_editing_pos" not in st.session_state:
+        st.session_state.rot_editing_pos = None
+    if "unsaved_event_count" not in st.session_state:
+        st.session_state.unsaved_event_count = 0
 
     # match state
     if "current_set" not in st.session_state:
@@ -2363,17 +2367,14 @@ def record_event(event: dict) -> None:
     set_key = f"Set{st.session_state.current_set}"
     st.session_state.events.setdefault(set_key, []).append(event)
 
-    event_to_disk = dict(event)
-    event_to_disk["set"] = st.session_state.current_set
-    # Always include serving_team in state snapshot for recovery
-    event_to_disk["serving_team"] = st.session_state.serving_team
-    append_current_match_event(event_to_disk)
-    
-    # Auto-save metadata on first event or if not saved?
-    # Better to just save it once during setup, but to be safe, we can save it if missing?
-    # Actually, save_current_match_snapshot calls save_match_meta, but append doesn't.
-    # Let's ensure meta is saved when recording events if not exists.
-    if not os.path.exists(get_current_match_meta_path()):
+    # GCS への書き込みは5イベントごとにまとめて行う（毎回書くと遅延が大きいため）
+    # イベントはすでに session_state.events に保持されているので、クラッシュ時の損失は最大4イベント分
+    st.session_state.unsaved_event_count += 1
+    if st.session_state.unsaved_event_count >= 5:
+        save_current_match_snapshot()
+        st.session_state.unsaved_event_count = 0
+    elif st.session_state.unsaved_event_count == 1:
+        # 初回イベント時はメタデータだけ保存（試合情報の記録）
         save_match_meta()
 
     # Toast notification
@@ -2710,104 +2711,100 @@ def show_setup_screen() -> None:
 
     # ===== STEP 2: スターティングローテ =====
     st.markdown("#### Step 2　スターティングローテ（6人）")
-    # Make sure we have players
     if not st.session_state.players_master:
         st.error("選手が登録されていません。各種登録で選手を追加してください。")
         return
 
-    # Create list of nicknames (or "Number: Nickname")
-    # But internally we store just nickname for simplicity as per user request
-    # To handle duplicate nicknames, maybe we should use "Number: Nickname" strictly?
-    # User said "Everything nickname". Let's use "Number: Nickname" for valid selection, 
-    # and store that string in rotation? Or just store nickname?
-    # If we store "Number: Nickname", then analysis screen buttons will show "1: Ryota". That's good.
-    # Let's use "Number: Nickname" as the identifier.
-    
-    player_options = [f"{p['number']}: {p.get('nickname', p['name'])}" for p in st.session_state.players_master]
-    
-    # Initialize starting_rotation if empty or containing names not in options
-    # We might need migration for existing starting_rotation if format changed
-    if len(st.session_state.starting_rotation) != 6:
-        st.session_state.starting_rotation = [player_options[0]] * 6
-    
-    # Ensure current values are in options, else default to 0
-    for i in range(6):
-        if st.session_state.starting_rotation[i] not in player_options:
-             # try to find by name part if possible, else reset
-             st.session_state.starting_rotation[i] = player_options[0]
+    # Libero は先発ローテーションから除外
+    player_options = [
+        f"{p['number']}: {p.get('nickname', p['name'])}"
+        for p in st.session_state.players_master
+        if p.get('position') != 'L'
+    ]
 
-    # --- Mini Court Visualization ---
-    # Layout:
-    # [P0] [P1] [P2]  (Top row: Left, Center, Right) -> indices 0, 1, 2
-    # [P5] [P4] [P3]  (Bottom row: Left, Center, Right) -> indices 5, 4, 3 ???
-    # User said: "Clockwise from top-left"
-    # [1: TL] [2: TC] [3: TR]  -> Indices 0, 1, 2
-    # [6: BL] [5: BC] [4: BR]  -> Indices 5, 4, 3
-    # Wait, clockwise 1->2->3->4->5->6 
-    # 4 is usually Bottom-Right in standard volleyball rotation?
-    # Standard: 
-    # 4 3 2 (Front)
-    # 5 6 1 (Back)
-    # But user explicitely mapped positions:
-    # "Top-Left=1, Top-Center=2, Top-Right=3, Bottom-Right=4, Bottom-Center=5, Bottom-Left=6"
-    # So we follow user index mapping.
-    # Display Grid:
-    # [Rot[0]] [Rot[1]] [Rot[2]]
-    # [Rot[5]] [Rot[4]] [Rot[3]]
-    
-    p = st.session_state.starting_rotation
-    
-    # CSS for mini court moved to apply_custom_css
-    
-    # Render Court Grid
-    # We use .court-grid class defined in main styles
-    # Visual grid index mapping:
-    # Top Row: 0(FL), 1(FC), 2(FR)  -> Indices 0, 1, 2
-    # Bottom Row: 5(BL), 4(BC), 3(BR) -> Indices 5, 4, 3
-    
-    # HTML structure
-    # Note: Extract just the nickname part for display? "1: Nickname" -> "Nickname"
+    if not player_options:
+        st.error("リベロ以外の選手が登録されていません。")
+        return
+
+    # デフォルトは未選択（空文字）、リベロ除外後の選択肢にない値はリセット
+    if len(st.session_state.starting_rotation) != 6:
+        st.session_state.starting_rotation = [""] * 6
+
+    for i in range(6):
+        if st.session_state.starting_rotation[i] not in player_options and st.session_state.starting_rotation[i] != "":
+            st.session_state.starting_rotation[i] = ""
+
+    if "rot_editing_pos" not in st.session_state:
+        st.session_state.rot_editing_pos = None
+
     def get_disp(full_str):
+        if not full_str:
+            return "未選択"
         if ":" in full_str:
             return full_str.split(":", 1)[1].strip()
         return full_str
 
-    html = f"""
-    <div class="court-grid">
-        <div class="court-cell"><span class="court-pos-label">1:左上</span>{get_disp(p[0])}</div>
-        <div class="court-cell"><span class="court-pos-label">2:中上</span>{get_disp(p[1])}</div>
-        <div class="court-cell"><span class="court-pos-label">3:右上</span>{get_disp(p[2])}</div>
-        <div class="court-cell"><span class="court-pos-label">6:左下</span>{get_disp(p[5])}</div>
-        <div class="court-cell"><span class="court-pos-label">5:中下</span>{get_disp(p[4])}</div>
-        <div class="court-cell"><span class="court-pos-label">4:右下</span>{get_disp(p[3])}</div>
-    </div>
-    """
-    st.markdown(html, unsafe_allow_html=True)
+    p = st.session_state.starting_rotation
+    pos_label_map = {0: "1:左上", 1: "2:中上", 2: "3:右上", 3: "4:右下", 4: "5:中下", 5: "6:左下"}
+    display_rows = [
+        [(0, "1:左上"), (1, "2:中上"), (2, "3:右上")],
+        [(5, "6:左下"), (4, "5:中下"), (3, "4:右下")],
+    ]
 
-    st.write("▼ 各ポジションの選手を選択（上のコート図に反映されます）")
-    
-    c1, c2, c3 = st.columns(3)
-    c4, c5, c6 = st.columns(3)
-    
-    # Helper for selectbox
-    def rot_select(idx, label, col):
-        with col:
-            st.session_state.starting_rotation[idx] = st.selectbox(
-                label,
-                player_options,
-                index=player_options.index(st.session_state.starting_rotation[idx]),
-                key=f"rot_sel_{idx}"
-            )
+    # 選手ピッカー（コート図の上に表示）
+    if st.session_state.rot_editing_pos is not None:
+        editing_idx = st.session_state.rot_editing_pos
+        # 他ポジションで既に選択済みの選手を除外
+        already_assigned = {
+            st.session_state.starting_rotation[i]
+            for i in range(6)
+            if i != editing_idx and st.session_state.starting_rotation[i]
+        }
+        available = [opt for opt in player_options if opt not in already_assigned]
 
-    # Row 1
-    rot_select(0, "1: 左上", c1)
-    rot_select(1, "2: 中上", c2)
-    rot_select(2, "3: 右上", c3)
-    
-    # Row 2 (Clockwise 4,5,6 from BR, BC, BL)
-    rot_select(5, "6: 左下", c4)
-    rot_select(4, "5: 中下", c5)
-    rot_select(3, "4: 右下", c6)
+        with st.container(border=True):
+            hdr_col, cls_col = st.columns([4, 1])
+            with hdr_col:
+                st.markdown(f"**{pos_label_map[editing_idx]} の選手を選択**")
+            with cls_col:
+                if st.button("✕", key="rot_picker_close", use_container_width=True):
+                    st.session_state.rot_editing_pos = None
+                    st.rerun()
+            if available:
+                pick_cols = st.columns(4)
+                for j, opt in enumerate(available):
+                    with pick_cols[j % 4]:
+                        is_selected = (opt == p[editing_idx])
+                        if st.button(
+                            opt,
+                            key=f"rot_pick_{editing_idx}_{j}",
+                            use_container_width=True,
+                            type="primary" if is_selected else "secondary"
+                        ):
+                            st.session_state.starting_rotation[editing_idx] = opt
+                            st.session_state.rot_editing_pos = None
+                            st.rerun()
+            else:
+                st.info("選択可能な選手がいません（全員が他のポジションに割り当て済み）")
+
+    # コート図（ポジションをタップして選手を登録）
+    with st.container(border=True):
+        for row in display_rows:
+            cols = st.columns(3)
+            for col_i, (rot_idx, pos_label) in enumerate(row):
+                with cols[col_i]:
+                    disp_name = get_disp(p[rot_idx])
+                    is_editing = st.session_state.rot_editing_pos == rot_idx
+                    is_unset = not p[rot_idx]
+                    st.caption(pos_label)
+                    if st.button(
+                        disp_name,
+                        key=f"court_cell_{rot_idx}",
+                        use_container_width=True,
+                        type="primary" if is_editing else "secondary"
+                    ):
+                        st.session_state.rot_editing_pos = None if is_editing else rot_idx
+                        st.rerun()
 
     st.subheader("最初のサーブ権")
     first_serve = st.radio("第1セットのサーブ", ["自チーム", "相手チーム"], key="first_serve_radio", horizontal=True)
@@ -2828,6 +2825,14 @@ def show_setup_screen() -> None:
 
     st.markdown("#### Step 3　試合開始")
     if st.button("試合を開始する", type="primary", use_container_width=True):
+        _rot = st.session_state.starting_rotation
+        _unset_positions = [
+            pos_label_map[idx] for idx in [0, 1, 2, 3, 4, 5] if not _rot[idx]
+        ]
+        if _unset_positions:
+            st.error(f"以下のポジションに選手が設定されていません: {', '.join(_unset_positions)}")
+        elif not (st.session_state.match_date and st.session_state.match_opponent and st.session_state.file_name):
+            st.error("日付・対戦相手・ファイル名をすべて入力してください")
         if st.session_state.match_date and st.session_state.match_opponent and st.session_state.file_name and all(st.session_state.starting_rotation):
             # --- New: Libero Selection ---
             st.session_state.is_analysis_active = True
@@ -2835,76 +2840,31 @@ def show_setup_screen() -> None:
             st.session_state.serving_team = "own" if first_serve == "自チーム" else "opponent"
             st.session_state.events = {f"Set{st.session_state.current_set}": []}
             
-            # Save Libero setting (Assuming selected in UI, see below)
-            # We need to add the input first! 
-            # (See next chunk for UI addition)
-            
-            # Initial Libero Swap Logic (Start of Match)
-            # If Libero is active, swap any BACK ROW MBs (except server if own serve)
+            # リベロ自動交代：試合開始時の初期セットアップ
+            # 自チームサーブ: サーバー(index 3)のMBは先に1本サーブを打つので交代しない
+            #                後衛センター(index 4)・後衛左(index 5)のMBがいれば交代
+            # 相手チームサーブ: 後衛のMB全員(index 3,4,5)を交代対象にする
+            st.session_state.mb_later_swap = []
             if st.session_state.get("libero_player_id"):
-                 # Identify Libero
-                 lib_id = st.session_state.libero_player_id
-                 lib_name = None
-                 for p in st.session_state.players_master:
-                     if f"{p['number']}: {p.get('nickname', p['name'])}" == lib_id:
-                         lib_name = p.get("nickname", p["name"])
-                         break
-                 
-                 if lib_name:
-                     # Identify MBs in Back Row (Indices: 5, 4, 3 -> BL, BC, BR)
-                     # BR (3) is server.
-                     # If we serve, BR stays MB. BL, BC swap.
-                     # If opp serves, all back row MBs swap.
-                     
-                     current_rot = st.session_state.rotation
-                     back_row_indices = [5, 4, 3] # BL, BC, BR
-                     
-                     for idx in back_row_indices:
-                         # Get player at this pos
-                         p_str = current_rot[idx] # "Num: Name"
-                         # Check if MB
-                         is_mb = False
-                         for p in st.session_state.players_master:
-                             if f"{p['number']}: {p.get('nickname', p['name'])}" == p_str:
-                                 if p["position"] == "MB":
-                                     is_mb = True
-                                 break
-                         
-                         if is_mb:
-                             # Check if serving
-                             is_serving = (idx == 3) and (st.session_state.serving_team == "own")
-                             if not is_serving:
-                                 # SWAP
-                                 # Store MB in bench stack? 
-                                 # Simple stack: st.session_state.mb_bench_stack.append(p_str)
-                                 # Replace with Libero
-                                 # Libero string format? Same as player option?
-                                 if ": " in p_str:
-                                     # try to match format
-                                     # lib_id is "Num: Name"
-                                     st.session_state.rotation[idx] = lib_id
-                                 else:
-                                     st.session_state.rotation[idx] = lib_id 
-                                     
-                                 st.session_state.libero_in_court = True
-                                 # Note: multiple MBs could be swapped? Usually only 1 or 2.
-                                 # We need to track WHICH MB is out?
-                                 # existing `libero_replaced_player` is single.
-                                 # If we have 2 MBs out?? (Rare 2-libero system or mess?)
-                                 # Standard: 1 Libero replaces 1 MB at a time.
-                                 # But at start, maybe 2 MBs are back? (Pos 5 and 6?)
-                                 # If 2 MBs back, Libero replaces one?
-                                 # User said "Automatic".
-                                 # Let's use a list for replaced players?
-                                 # For V4 simple logic: Just track the last one or use a stack?
-                                 # Let's assume standard rotation where they are opposite.
-                                 # If 2 MBs are back, usually one serves, one is center back?
-                                 # Let's stack them.
+                lib_id = st.session_state.libero_player_id
+                serving_own = (st.session_state.serving_team == "own")
+                # 自チームサーブ時はサーバー(idx=3)を除外、相手サーブ時は全後衛チェック
+                check_indices = [4, 5] if serving_own else [4, 5, 3]
+                for idx in check_indices:
+                    p_str = st.session_state.rotation[idx]
+                    is_mb = any(
+                        f"{pm['number']}: {pm.get('nickname', pm['name'])}" == p_str
+                        and pm.get("position") == "MB"
+                        for pm in st.session_state.players_master
+                    )
+                    if is_mb and not st.session_state.libero_in_court:
+                        st.session_state.rotation[idx] = lib_id
+                        st.session_state.libero_in_court = True
+                        st.session_state.mb_later_swap.append(p_str)
+                        break  # 1人のリベロは同時に1人のMBのみ交代
                                  
             save_current_match_snapshot()
             st.rerun()
-        else:
-            st.error("日付・対戦相手・ファイル名をすべて入力してください")
 
 
 def show_analysis_screen() -> None:
@@ -3043,6 +3003,7 @@ def show_analysis_screen() -> None:
                 
                 # Update snapshot
                 save_current_match_snapshot()
+                st.session_state.unsaved_event_count = 0
                 st.session_state.court_key_id += 1
                 st.toast("⏪ 操作を取り消しました")
                 st.rerun()
@@ -3658,6 +3619,7 @@ def show_analysis_screen() -> None:
                 st.session_state.libero_in_court = False
                 st.session_state.libero_replaced_player = None
                 save_current_match_snapshot()
+                st.session_state.unsaved_event_count = 0
                 st.toast(f"🏀 Set {st.session_state.current_set - 1} 終了！")
                 st.rerun()
         with ce2:
