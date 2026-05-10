@@ -10,26 +10,22 @@ import streamlit.components.v1 as components
 
 # Cloud Storage imports
 from google.cloud import storage
+from google.oauth2 import service_account
 import io
 
 # ------------------------------------------------------------
 # Cloud Storage helpers
 # ------------------------------------------------------------
 
-# bucket name created earlier
 GCS_BUCKET_NAME = "volley-app"
 
 @st.cache_resource
-class GCSClient:
-    """Cached client instance for GCS."""
-    def __init__(self):
-        self.client = storage.Client()
-        self.bucket = self.client.bucket(GCS_BUCKET_NAME)
-
-
 def get_bucket():
-    """Return the configured GCS bucket."""
-    return GCSClient().bucket
+    credentials = service_account.Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"]
+    )
+    client = storage.Client(credentials=credentials)
+    return client.bucket(GCS_BUCKET_NAME)
 
 
 def gcs_download(path: str) -> str | None:

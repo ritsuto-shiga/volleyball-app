@@ -33,3 +33,7 @@ Thumbs.db
 # Google Cloud サービスアカウントなど
 *.key
 service-account.json
+*.json
+
+# Streamlit secrets（絶対にGitHubに上げない）
+.streamlit/secrets.toml
